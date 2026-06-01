@@ -27,134 +27,105 @@ class MockDoor : public Door {
   MOCK_METHOD(bool, isDoorOpened, (), (override));
 };
 
-void closeDoor(Door* door) {
-  door->lock();
-}
-
-void openDoor(Door* door) {
-  door->unlock();
-}
-
-bool getDoorState(Door* door) {
-  return door->isDoorOpened();
-}
-
-class TimedDoorTest : public ::testing::Test {
+class DoorFixture : public ::testing::Test {
  protected:
-  TimedDoor* instantDoor{};
-  TimedDoor* delayedDoor{};
+  TimedDoor* zeroDoor{};
+  TimedDoor* slowDoor{};
 
   void SetUp() override {
-    instantDoor = new TimedDoor(0);
-    delayedDoor = new TimedDoor(40);
+    zeroDoor = new TimedDoor(0);
+    slowDoor  = new TimedDoor(50);
   }
 
   void TearDown() override {
-    delete instantDoor;
-    delete delayedDoor;
+    delete zeroDoor;
+    delete slowDoor;
   }
 };
 
 }  // namespace
 
-TEST_F(TimedDoorTest, ConstructorStoresTimeoutValue) {
-  EXPECT_EQ(delayedDoor->getTimeOut(), 40);
+TEST_F(DoorFixture, TimeoutValueStoredOnCreate) {
+  EXPECT_EQ(slowDoor->getTimeOut(), 50);
 }
 
-TEST_F(TimedDoorTest, DoorIsClosedAfterConstruction) {
-  EXPECT_FALSE(instantDoor->isDoorOpened());
+TEST_F(DoorFixture, DoorStartsInClosedState) {
+  EXPECT_FALSE(zeroDoor->isDoorOpened());
 }
 
-TEST_F(TimedDoorTest, LockClosesDoor) {
-  delayedDoor->lock();
-
-  EXPECT_FALSE(delayedDoor->isDoorOpened());
+TEST_F(DoorFixture, LockSetsClosedState) {
+  slowDoor->lock();
+  EXPECT_FALSE(slowDoor->isDoorOpened());
 }
 
-TEST_F(TimedDoorTest, ThrowStateDoesNotThrowForClosedDoor) {
-  instantDoor->lock();
-
-  EXPECT_NO_THROW(instantDoor->throwState());
+TEST_F(DoorFixture, NoThrowWhenDoorLocked) {
+  zeroDoor->lock();
+  EXPECT_NO_THROW(zeroDoor->throwState());
 }
 
-TEST_F(TimedDoorTest, ThrowStateThrowsForOpenedDoor) {
-  auto unlockFuture = std::async(std::launch::async, [this] {
-    delayedDoor->unlock();
+TEST_F(DoorFixture, ThrowWhenDoorUnlocked) {
+  auto fut = std::async(std::launch::async, [this] {
+    slowDoor->unlock();
   });
-
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  EXPECT_THROW(delayedDoor->throwState(), std::runtime_error);
-
-  delayedDoor->lock();
-  EXPECT_NO_THROW(unlockFuture.get());
+  EXPECT_THROW(slowDoor->throwState(), std::runtime_error);
+  slowDoor->lock();
+  EXPECT_NO_THROW(fut.get());
 }
 
-TEST_F(TimedDoorTest, AdapterTimeoutDoesNotThrowWhenDoorIsClosed) {
-  DoorTimerAdapter adapter(*instantDoor);
-  instantDoor->lock();
-
+TEST_F(DoorFixture, AdapterNoThrowOnLockedDoor) {
+  DoorTimerAdapter adapter(*zeroDoor);
+  zeroDoor->lock();
   EXPECT_NO_THROW(adapter.Timeout());
 }
 
-TEST_F(TimedDoorTest, AdapterTimeoutThrowsWhenDoorIsOpened) {
-  DoorTimerAdapter adapter(*delayedDoor);
-  auto unlockFuture = std::async(std::launch::async, [this] {
-    delayedDoor->unlock();
+TEST_F(DoorFixture, AdapterThrowsOnUnlockedDoor) {
+  DoorTimerAdapter adapter(*slowDoor);
+  auto fut = std::async(std::launch::async, [this] {
+    slowDoor->unlock();
   });
-
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
   EXPECT_THROW(adapter.Timeout(), std::runtime_error);
-
-  delayedDoor->lock();
-  EXPECT_NO_THROW(unlockFuture.get());
+  slowDoor->lock();
+  EXPECT_NO_THROW(fut.get());
 }
 
-TEST_F(TimedDoorTest, UnlockThrowsWhenDoorRemainsOpenedUntilTimeout) {
-  EXPECT_THROW(instantDoor->unlock(), std::runtime_error);
+TEST_F(DoorFixture, UnlockThrowsAfterTimeout) {
+  EXPECT_THROW(zeroDoor->unlock(), std::runtime_error);
 }
 
-TEST_F(TimedDoorTest, UnlockDoesNotThrowIfDoorIsClosedBeforeTimeout) {
-  auto unlockFuture = std::async(std::launch::async, [this] {
-    delayedDoor->unlock();
+TEST_F(DoorFixture, NoThrowIfLockedBeforeTimeout) {
+  auto fut = std::async(std::launch::async, [this] {
+    slowDoor->unlock();
   });
-
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  delayedDoor->lock();
-
-  EXPECT_NO_THROW(unlockFuture.get());
-  EXPECT_FALSE(delayedDoor->isDoorOpened());
+  slowDoor->lock();
+  EXPECT_NO_THROW(fut.get());
+  EXPECT_FALSE(slowDoor->isDoorOpened());
 }
 
-TEST(TimerTest, TimerCallsTimeoutForRegisteredClient) {
+TEST(TimerTest, ClientTimeoutCalledOnce) {
   Timer timer;
   MockTimerClient client;
-
   EXPECT_CALL(client, Timeout()).Times(Exactly(1));
-
   timer.tregister(0, &client);
 }
 
-TEST(DoorInterfaceTest, HelperCloseDoorUsesLockMethod) {
+TEST(MockDoorTest, LockMethodInvoked) {
   MockDoor door;
-
   EXPECT_CALL(door, lock()).Times(Exactly(1));
-
-  closeDoor(&door);
+  door.lock();
 }
 
-TEST(DoorInterfaceTest, HelperOpenDoorUsesUnlockMethod) {
+TEST(MockDoorTest, UnlockMethodInvoked) {
   MockDoor door;
-
   EXPECT_CALL(door, unlock()).Times(Exactly(1));
-
-  openDoor(&door);
+  door.unlock();
 }
 
-TEST(DoorInterfaceTest, HelperGetDoorStateUsesIsDoorOpenedMethod) {
+TEST(MockDoorTest, IsDoorOpenedReturnsValue) {
   MockDoor door;
-
   EXPECT_CALL(door, isDoorOpened()).Times(Exactly(1))
-      .WillOnce(Return(true));
-
-  EXPECT_TRUE(getDoorState(&door));
+      .WillOnce(Return(false));
+  EXPECT_FALSE(door.isDoorOpened());
 }

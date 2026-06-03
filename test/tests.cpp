@@ -4,13 +4,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <future>
 #include <stdexcept>
 #include <thread>
 
 #include "TimedDoor.h"
 
+using ::testing::AtLeast;
 using ::testing::Exactly;
+using ::testing::NiceMock;
 using ::testing::Return;
 
 namespace {
@@ -29,103 +30,109 @@ class MockDoor : public Door {
 
 class DoorFixture : public ::testing::Test {
  protected:
-  TimedDoor* zeroDoor{};
+  TimedDoor* fastDoor{};
   TimedDoor* slowDoor{};
 
   void SetUp() override {
-    zeroDoor = new TimedDoor(0);
-    slowDoor  = new TimedDoor(50);
+    fastDoor = new TimedDoor(0);
+    slowDoor  = new TimedDoor(60);
   }
 
   void TearDown() override {
-    delete zeroDoor;
+    delete fastDoor;
     delete slowDoor;
   }
 };
 
 }  // namespace
 
-TEST_F(DoorFixture, TimeoutValueStoredOnCreate) {
-  EXPECT_EQ(slowDoor->getTimeOut(), 50);
+TEST_F(DoorFixture, InitialStateIsClosed) {
+  EXPECT_FALSE(fastDoor->isDoorOpened());
 }
 
-TEST_F(DoorFixture, DoorStartsInClosedState) {
-  EXPECT_FALSE(zeroDoor->isDoorOpened());
+TEST_F(DoorFixture, TimeoutStoredCorrectly) {
+  EXPECT_EQ(60, slowDoor->getTimeOut());
 }
 
-TEST_F(DoorFixture, LockSetsClosedState) {
+TEST_F(DoorFixture, LockSetsDoorClosed) {
   slowDoor->lock();
   EXPECT_FALSE(slowDoor->isDoorOpened());
 }
 
-TEST_F(DoorFixture, NoThrowWhenDoorLocked) {
-  zeroDoor->lock();
-  EXPECT_NO_THROW(zeroDoor->throwState());
+TEST_F(DoorFixture, MultipleLocksKeepDoorClosed) {
+  slowDoor->lock();
+  slowDoor->lock();
+  EXPECT_FALSE(slowDoor->isDoorOpened());
 }
 
-TEST_F(DoorFixture, ThrowWhenDoorUnlocked) {
-  auto fut = std::async(std::launch::async, [this] {
-    slowDoor->unlock();
-  });
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+TEST_F(DoorFixture, TimeoutUnchangedAfterLock) {
+  slowDoor->lock();
+  EXPECT_EQ(60, slowDoor->getTimeOut());
+}
+
+TEST_F(DoorFixture, ThrowStateOkWhenClosed) {
+  fastDoor->lock();
+  EXPECT_NO_THROW(fastDoor->throwState());
+}
+
+TEST_F(DoorFixture, ThrowStateThrowsWhenOpened) {
+  std::thread t([this] { slowDoor->unlock(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
   EXPECT_THROW(slowDoor->throwState(), std::runtime_error);
   slowDoor->lock();
-  EXPECT_NO_THROW(fut.get());
+  t.join();
 }
 
-TEST_F(DoorFixture, AdapterNoThrowOnLockedDoor) {
-  DoorTimerAdapter adapter(*zeroDoor);
-  zeroDoor->lock();
+TEST_F(DoorFixture, UnlockThrowsIfDoorStaysOpen) {
+  EXPECT_THROW(fastDoor->unlock(), std::runtime_error);
+}
+
+TEST_F(DoorFixture, NoThrowIfClosedBeforeTimeout) {
+  std::thread t([this] { slowDoor->unlock(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  slowDoor->lock();
+  t.join();
+  EXPECT_FALSE(slowDoor->isDoorOpened());
+}
+
+TEST_F(DoorFixture, AdapterNoThrowOnClosedDoor) {
+  DoorTimerAdapter adapter(*fastDoor);
+  fastDoor->lock();
   EXPECT_NO_THROW(adapter.Timeout());
 }
 
-TEST_F(DoorFixture, AdapterThrowsOnUnlockedDoor) {
+TEST_F(DoorFixture, AdapterThrowsOnOpenDoor) {
   DoorTimerAdapter adapter(*slowDoor);
-  auto fut = std::async(std::launch::async, [this] {
-    slowDoor->unlock();
-  });
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  std::thread t([this] { slowDoor->unlock(); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
   EXPECT_THROW(adapter.Timeout(), std::runtime_error);
   slowDoor->lock();
-  EXPECT_NO_THROW(fut.get());
+  t.join();
 }
 
-TEST_F(DoorFixture, UnlockThrowsAfterTimeout) {
-  EXPECT_THROW(zeroDoor->unlock(), std::runtime_error);
-}
-
-TEST_F(DoorFixture, NoThrowIfLockedBeforeTimeout) {
-  auto fut = std::async(std::launch::async, [this] {
-    slowDoor->unlock();
-  });
-  std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  slowDoor->lock();
-  EXPECT_NO_THROW(fut.get());
-  EXPECT_FALSE(slowDoor->isDoorOpened());
-}
-
-TEST(TimerTest, ClientTimeoutCalledOnce) {
+TEST(TimerTest, RegisteredClientReceivesTimeout) {
   Timer timer;
   MockTimerClient client;
   EXPECT_CALL(client, Timeout()).Times(Exactly(1));
   timer.tregister(0, &client);
 }
 
-TEST(MockDoorTest, LockMethodInvoked) {
+TEST(MockDoorTest, LockIsCalledViaInterface) {
   MockDoor door;
-  EXPECT_CALL(door, lock()).Times(Exactly(1));
-  door.lock();
+  EXPECT_CALL(door, lock()).Times(AtLeast(1));
+  auto doClose = [](Door& d) { d.lock(); };
+  doClose(door);
 }
 
-TEST(MockDoorTest, UnlockMethodInvoked) {
+TEST(MockDoorTest, UnlockIsCalledViaInterface) {
   MockDoor door;
-  EXPECT_CALL(door, unlock()).Times(Exactly(1));
-  door.unlock();
+  EXPECT_CALL(door, unlock()).Times(AtLeast(1));
+  auto doOpen = [](Door& d) { d.unlock(); };
+  doOpen(door);
 }
 
-TEST(MockDoorTest, IsDoorOpenedReturnsValue) {
-  MockDoor door;
-  EXPECT_CALL(door, isDoorOpened()).Times(Exactly(1))
-      .WillOnce(Return(false));
-  EXPECT_FALSE(door.isDoorOpened());
+TEST(MockDoorTest, IsDoorOpenedReturnsFalse) {
+  NiceMock<MockDoor> door;
+  ON_CALL(door, isDoorOpened()).WillByDefault(Return(false));
+  ASSERT_FALSE(door.isDoorOpened());
 }

@@ -1,6 +1,7 @@
 // Copyright 2021 GHA Test Team
 #include "TimedDoor.h"
 
+#include <algorithm>
 #include <chrono>
 #include <stdexcept>
 #include <thread>
@@ -15,6 +16,10 @@ TimedDoor::TimedDoor(int timeout)
     : adapter(new DoorTimerAdapter(*this)),
       iTimeout(timeout),
       isOpened(false) {}
+
+TimedDoor::~TimedDoor() {
+  delete adapter;
+}
 
 bool TimedDoor::isDoorOpened() {
   return isOpened;
@@ -37,16 +42,13 @@ int TimedDoor::getTimeOut() const {
 
 void TimedDoor::throwState() {
   if (isOpened) {
-    throw std::runtime_error("Door is opened too long");
+    throw std::runtime_error("Door is open past allowed timeout");
   }
 }
 
 void Timer::sleep(int timeout) {
-  if (timeout <= 0) {
-    return;
-  }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(timeout));
+  auto ms = std::chrono::milliseconds(std::max(0, timeout));
+  std::this_thread::sleep_for(ms);
 }
 
 void Timer::tregister(int timeout, TimerClient* timerClient) {
